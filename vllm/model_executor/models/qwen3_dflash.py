@@ -470,7 +470,20 @@ class DFlashQwen3Model(nn.Module):
         self._hidden_norm_weight = self.hidden_norm.weight.data
 
         # KV projection weights: [num_layers * 2 * kv_size, hidden_size]
-        kv_weights = [a.qkv_proj.weight[a.q_size :] for a in layers_attn]
+        def _dense_w(lin):
+            if hasattr(lin, "weight"):
+                return lin.weight
+            # Quantized draft (e.g. compressed-tensors pack-quantized): no dense .weight
+            # param exists, so materialize it exactly through the layer's own quant
+            # kernel -- eye(in) @ W^T = W^T -- once at load time.
+            eye = torch.eye(
+                lin.input_size,
+                dtype=self.hidden_norm.weight.dtype,
+                device=self.hidden_norm.weight.device,
+            )
+            return lin.quant_method.apply(lin, eye, bias=None).t().contiguous()
+
+        kv_weights = [_dense_w(a.qkv_proj)[a.q_size :] for a in layers_attn]
         self._fused_kv_weight = torch.cat(kv_weights, dim=0)
         if has_bias:
             kv_biases = [a.qkv_proj.bias[a.q_size :] for a in layers_attn]
@@ -844,7 +857,12 @@ class DFlashQwen3ForCausalLM(Qwen3ForCausalLM):
         mapper = WeightsMapper(orig_to_new_substr=orig_to_new_substr)
         loader = AutoWeightsLoader(self)
         loader.load_weights(model_weights.items(), mapper=mapper)
-        self.model._build_fused_kv_buffers()
+        try:
+            self.model._build_fused_kv_buffers()
+        except AttributeError:
+            # Quantized draft kernels cannot run until post-load repacking.
+            # The lazy context-KV rebuild runs after that processing completes.
+            pass
 
     def _read_mask_embedding(self) -> torch.Tensor | None:
         """Checks for an override mask embedding in `mask_embedding.pt` and returns it.
