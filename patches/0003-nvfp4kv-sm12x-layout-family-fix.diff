@@ -1,0 +1,34 @@
+--- a/vllm/v1/worker/worker_base.py
++++ b/vllm/v1/worker/worker_base.py
+@@ -20,7 +20,7 @@
+     get_supported_kv_cache_layouts,
+     record_kv_cache_layout,
+ )
+-from vllm.v1.kv_cache_interface import KVCacheSpec
++from vllm.v1.kv_cache_interface import KVCacheLayout, KVCacheSpec
+ 
+ if TYPE_CHECKING:
+     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
+@@ -107,7 +107,21 @@
+     def get_supported_kv_cache_layouts(self) -> list[str]:
+         """Layout names every attention backend supports, most preferred first."""
+         backends = get_current_attn_backends(self.vllm_config)
+-        return [layout.name for layout in get_supported_kv_cache_layouts(backends)]
++        layouts = [layout.name for layout in get_supported_kv_cache_layouts(backends)]
++        # NVFP4KV-SM120: the SM12x paged NVFP4 pool interior is head-major
++        # (HND), and the FlashInfer FA2 NVFP4 paged reader only decodes it
++        # with the HND layout string. The backend's HND declaration in
++        # supported_kv_cache_layouts is unreachable from this RPC (the
++        # vllm_config context var is unset), so force the HND family when
++        # the cache dtype is nvfp4 on SM12x.
++        cc = self.vllm_config.cache_config
++        if (
++            cc is not None
++            and str(cc.cache_dtype or "").startswith("nvfp4")
++            and torch.cuda.get_device_capability()[0] == 12
++        ):
++            layouts = [KVCacheLayout.LBHNC.name, KVCacheLayout.BLHNC.name]
++        return layouts
+ 
+     def set_kv_cache_layout(self, kv_cache_layout: str) -> None:
+         """Adopt the KV cache layout resolved by the engine core."""

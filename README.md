@@ -14,6 +14,20 @@ Easy, fast, and cheap LLM serving for everyone
 | <a href="https://docs.vllm.ai"><b>Documentation</b></a> | <a href="https://blog.vllm.ai/"><b>Blog</b></a> | <a href="https://arxiv.org/abs/2309.06180"><b>Paper</b></a> | <a href="https://x.com/vllm_project"><b>Twitter/X</b></a> | <a href="https://discuss.vllm.ai"><b>User Forum</b></a> | <a href="https://slack.vllm.ai"><b>Developer Slack</b></a> |
 </p>
 
+**Note: NVFP4 KV cache on SM12x.** Serving `--kv-cache-dtype nvfp4` on
+consumer Blackwell (sm_120, RTX 5090) through the FlashInfer FA2 paged
+path is broken on stock vLLM. Upstream PR [#51718](https://github.com/vllm-project/vllm/pull/51718)
+(KV cache layout standardization, commit `8bdc70ec`, first shipped in
+v0.28.1 / v0.29.0rc) moved backend layout declarations to the worker's
+layout RPC, which runs without the vllm_config context, so the NVFP4 HND
+declaration is never reached and the engine resolves the LBNHC ("NHD")
+layout for a paged pool whose interior is physically HND. The FA2 sm12x
+NVFP4 paged reader then reads K and V in the wrong order, and every
+generation degenerates (live token loops, `finish_reason=length`). The
+fix is `patches/0003-nvfp4kv-sm12x-layout-family-fix.diff`; the full set
+is applied on branch `sm12x-nvfp4kv` on `v0.29.0rc2`.
+
+
 🔥 We have built a vLLM website to help you get started with vLLM. Please visit [vllm.ai](https://vllm.ai) to learn more.
 For events, please visit [vllm.ai/events](https://vllm.ai/events) to join us.
 
