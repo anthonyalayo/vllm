@@ -24,8 +24,10 @@ local validation. No upstream contribution is proposed.
 
 Keep model `gittensor-model-hub/Qwen3.8-27B-NVFP4-RTX5090` pinned to
 `0cc27958cefbbe231782ec8511de8c4eb5233348`, the custom chat template, MTP
-with three speculative tokens, 0.92 GPU utilization, eight sequences,
-and 2048 batched tokens.
+with three speculative tokens, eight sequences, and 2048 batched tokens.
+The validated final configuration leaves GPU utilization unset, enables
+`PYTORCH_ALLOC_CONF=expandable_segments:True`, and caps CUDA graph capture
+at 32. See the results report for the measured cold-autotune evidence.
 
 Remove obsolete `VLLM_SM12X_NVFP4KV_SO` and
 `VLLM_SM12X_NVFP4_PREFILL_SPLIT_KV` environment variables from the upgraded
@@ -65,7 +67,8 @@ Commands completed:
 - `.venv/bin/python -m pytest tests/v1/worker/test_extensible_kv_cache.py -k 'not engine_pads and not capture_gets and not sizing_warmup and not adaptive_verification and not drafter_capture' -v`: 31 passed, five deselected (separate model-start integration tests).
 - Pre-commit on changed documentation: passed.
 
-Longer-context validation and final service selection are in progress.
+Final configuration, root-cause investigation, complete correctness checks,
+and matched benchmark results are in [UPGRADE_RESULTS.md](UPGRADE_RESULTS.md).
 
 ## Local fix for #46268
 

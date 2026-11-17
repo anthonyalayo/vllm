@@ -7,7 +7,8 @@
 Patch set for `--kv-cache-dtype nvfp4` on consumer Blackwell (sm_120,
 RTX 5090) through the FlashInfer FA2 native paged path, plus the
 DFlash2 quantized-draft loader. These are the five commits applied on
-branch `sm12x-nvfp4kv` (based on `v0.30.0`). Each `.diff` is a
+the pinned branch at `63277ca386` (based on `v0.30.0`), preserved as
+`backup/sm12x-nvfp4kv-20261117`. Each `.diff` is a
 self-contained unified diff; apply in order at the fork root:
 
     for p in 0001 0002 0003 0004 0005; do

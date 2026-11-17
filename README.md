@@ -14,10 +14,12 @@ Easy, fast, and cheap LLM serving for everyone
 | <a href="https://docs.vllm.ai"><b>Documentation</b></a> | <a href="https://blog.vllm.ai/"><b>Blog</b></a> | <a href="https://arxiv.org/abs/2309.06180"><b>Paper</b></a> | <a href="https://x.com/vllm_project"><b>Twitter/X</b></a> | <a href="https://discuss.vllm.ai"><b>User Forum</b></a> | <a href="https://slack.vllm.ai"><b>Developer Slack</b></a> |
 </p>
 
-**Fork upgrade (2026-11-17):** Runtime code follows upstream `main`.
+**Fork upgrade (2026-11-17):** NVFP4 attention follows upstream `main`; a local
+JIT compiler memory guard is documented in the upgrade notes.
 SM12x NVFP4 KV cache support is now upstream; the old v0.30 patches in
 [`patches/`](patches/README.md) are historical and must not be reapplied.
-See [`UPGRADE_NOTES.md`](UPGRADE_NOTES.md) for patch disposition and validation.
+See [`UPGRADE_NOTES.md`](UPGRADE_NOTES.md) for patch disposition and
+[`UPGRADE_RESULTS.md`](UPGRADE_RESULTS.md) for measured capacity and benchmarks.
 
 🔥 We have built a vLLM website to help you get started with vLLM. Please visit [vllm.ai](https://vllm.ai) to learn more.
 For events, please visit [vllm.ai/events](https://vllm.ai/events) to join us.
