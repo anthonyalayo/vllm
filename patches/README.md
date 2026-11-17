@@ -1,5 +1,9 @@
 # SM12x NVFP4 KV + DFlash2 patches
 
+> Historical v0.30 patch archive. These patches are **not applied** to the
+> upgraded branch. Do not apply them to current upstream; see
+> [upgrade notes](../UPGRADE_NOTES.md) for their replacements.
+
 Patch set for `--kv-cache-dtype nvfp4` on consumer Blackwell (sm_120,
 RTX 5090) through the FlashInfer FA2 native paged path, plus the
 DFlash2 quantized-draft loader. These are the five commits applied on
@@ -16,6 +20,7 @@ dependency). If something regresses after a vLLM rebase, the "look for"
 line under the matching patch is where to start.
 
 ## 0001 — FA2 native NVFP4 KV path
+
 `0001-sm120-nvfp4kv-fa2-routing.diff`
 
 Routes SM12x NVFP4 KV through FlashInfer's FA2 native paged reader
@@ -30,6 +35,7 @@ contiguous strides. The pool interior is head-major (HND).
   layout mismatch.
 
 ## 0002 — V-scale swizzle, arch-conditional
+
 `0002-nvfp4-writer-linear-vscale-sm12x.diff`
 
 The FA2 sm12x paged reader reads V scales linearly, while the SM100
@@ -46,6 +52,7 @@ sync with that artifact.
   assert on a non-multiple-of-4 block size.
 
 ## 0003 — HND layout-family fix
+
 `0003-nvfp4kv-sm12x-layout-family-fix.diff`
 
 The regression fix for upstream PR #51718 (KV-cache layout
@@ -64,6 +71,7 @@ pool allocation, writer views and the reader string all agree.
   needle probes.
 
 ## 0004 — Opt-in NVFP4 prefill split-KV
+
 `0004-nvfp4-prefill-split-kv-sm12x.diff`
 
 FlashInfer 0.6.18 forces `disable_split_kv=False` for packed NVFP4 KV,
@@ -78,6 +86,7 @@ split-KV behavior for that route. Nothing changes until the flag is set.
   to ~29 tok/s.
 
 ## 0005 — DFlash2 quantized-draft loader
+
 `0005-dflash2-quantized-draft-loader.diff`
 
 DFlash2's `_build_context_kv_buffers` assumes a dense `.weight` on each
