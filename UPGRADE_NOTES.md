@@ -3,7 +3,8 @@
 Original branch: `sm12x-nvfp4kv` at `63277ca386`.
 Local rollback branch: `backup/sm12x-nvfp4kv-20261117`.
 Upgrade base: upstream `main` at `935f87de84` (after v0.34.0).
-The upgrade carries no runtime changes relative to that upstream commit.
+The initial serving baseline carried no runtime changes relative to that
+upstream commit. A separate local JIT-memory fix is described below.
 AI assistance: Codex inspected the patches, rebased the archive, and performed
 local validation. No upstream contribution is proposed.
 
@@ -65,3 +66,39 @@ Commands completed:
 - Pre-commit on changed documentation: passed.
 
 Longer-context validation and final service selection are in progress.
+
+## Local fix for #46268
+
+Based on the unmerged vLLM [#66864](https://github.com/vllm-project/vllm/pull/66864)
+(commits `902215d5cb` and `e8c8cc046b`), with local corrections. No duplicate
+upstream PR is proposed. Original author: tgghzyh.
+
+The first selected CUTLASS NVFP4 kernel sets a conservative automatic
+`MAX_JOBS` when there is no positive explicit override. It budgets half the
+available memory at at least 8 GiB/job, scales the allowance with NVCC
+threads, and caps jobs by CPU affinity. Local changes also walk inherited
+cgroup v2 `memory.max` and `memory.high`, and replace zero/invalid values
+rather than allowing unlimited Ninja jobs. Positive values are normalized
+for FlashInfer's numeric environment parser. The chosen value persists in
+the worker and applies per build, not as a global reservation across workers.
+At least one job is allowed; this heuristic cannot guarantee that it fits.
+The existing `MAX_JOBS=2` service override remains useful.
+
+Other proposals reviewed and tested with deterministic synthetic memory
+and environment inputs (not claims of full GPU validation of those PRs):
+
+| Proposal | Finding |
+| --- | --- |
+| FlashInfer [#3636](https://github.com/flashinfer-ai/flashinfer/pull/3636) | Walks nested v2 limits and accounts for NVCC threads; accepts `MAX_JOBS=0` as unlimited. |
+| FlashInfer [#3665](https://github.com/flashinfer-ai/flashinfer/pull/3665) | Walks nested v1/v2 limits and rejects zero; leaves Ninja's default when its CPU estimate fits, and ignores NVCC thread memory growth. |
+| FlashInfer [#3899](https://github.com/flashinfer-ai/flashinfer/pull/3899) | Ignores cgroups; chose six jobs with only 12 GiB nested service headroom; preserves zero. |
+| vLLM #66864 | Root-only memory helper misses normal nested systemd limits (four jobs with 12 GiB headroom); preserves zero. Local fixes address these cases. |
+| vLLM [#57625](https://github.com/vllm-project/vllm/pull/57625) | Changes package-build parallelism in setup.py, not FlashInfer runtime JIT; not a fix for this startup path. |
+
+`.venv/bin/python -m pytest tests/utils_/test_flashinfer_utils.py -q`:
+17 passed, including nested service/ancestor limits, soft budgets, invalid
+job counts, NVCC threading, and explicit override handling.
+The selected-kernel startup logged the automatic choice of two compiler
+jobs on this host. This startup reused the FP4 compilation cache; the actual
+cold FP4 compilation was observed during the earlier upstream baseline,
+with an explicit two-job limit.

@@ -54,6 +54,19 @@ module prefix and decoder layer indices before constructing quantized layers.
     [Engine Arguments](../../configuration/engine_args.md) page and shown by
     `vllm serve --help=KernelConfig`.
 
+    When the FlashInfer CUTLASS NVFP4 kernel is selected and `MAX_JOBS` is
+    unset, vLLM limits JIT compilation parallelism using available host memory,
+    including inherited cgroup v2 `memory.max` and `memory.high` budgets. It
+    budgets at least 8 GiB per compiler job against half of the available
+    memory, increasing that allowance with `FLASHINFER_NVCC_THREADS`, and
+    caps jobs by CPU affinity. Set a positive `MAX_JOBS` before starting vLLM
+    to override the limit; invalid or zero values use automatic sizing.
+    The limit remains
+    in the worker environment and can affect later JIT builds. Cold starts may
+    take longer. This is a per-worker heuristic, not a shared memory reservation
+    or a guarantee that even one compiler job will fit. A reusable kernel cache
+    avoids compilation, but toolchain/header changes can invalidate it.
+
 !!! note
     For models quantized to MXFP8 with BF16 activations on SM100-family GPUs,
     use `--linear-backend flashinfer_trtllm` to select FlashInfer's TensorRT-LLM
