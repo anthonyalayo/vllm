@@ -31,7 +31,7 @@ increase the checkpoint's positional limit.
 | Actual VMM backing | Not applicable | 9.363 GiB |
 | Fresh autotune needs an initial 0.8 run | Existing operational practice | Not needed in the tested pinned configuration |
 | Autotuner CUDA allocation failures | Reproduced at 0.92; falls back to default tactics | None in the fresh-autotune candidate |
-| Host compiler job limit | Explicit MAX_JOBS=2 drop-in | Keep MAX_JOBS=2; local automatic fallback also tested |
+| Host compiler job limit | Explicit MAX_JOBS=2 drop-in | MAX_JOBS unset; automatic guard cold-build tested |
 | CUDA graph capture maximum | 64 | 32, covering eight requests x four verify tokens |
 | Torch allocator | Default | expandable_segments:True |
 
@@ -161,20 +161,110 @@ and CUDA overlay for rollback. Remote backups are
 
 The original unit is also preserved as
 `/etc/systemd/system/vllm.service.pre-upgrade-20261117`. To restore the old
-service and environment:
+service and environment, including the old explicit compiler job limit:
 
 ```bash
 sudo systemctl stop vllm
 sudo cp /etc/systemd/system/vllm.service.pre-upgrade-20261117 /etc/systemd/system/vllm.service
+sudo cp /etc/systemd/system/vllm.service.d/10-memory.conf.pre-auto-jobs-20261117 /etc/systemd/system/vllm.service.d/10-memory.conf
 sudo systemctl daemon-reload
 sudo systemctl start vllm
 ```
 
-The existing `10-memory.conf` drop-in remains in force: MAX_JOBS=2 and
-MemoryHigh=32G. The new unit enables expandable allocator segments, leaves
+The `10-memory.conf` drop-in retains MemoryHigh=32G and leaves MAX_JOBS unset.
+The new unit enables expandable allocator segments, leaves
 GPU utilization unset, uses capture maximum 32, and removes the custom
 NVFP4 overlay and forced split-KV variables. Its historical 0.8 preparation
 comment is replaced with the measured pinned-configuration behavior.
 
 The tested autotune cache is preserved at
 `/home/anthony/.cache/vllm/rtx5090-autotune-v2`.
+
+## Follow-up: utilization cap and selective embedding UVA
+
+These runs use the same pinned revision, allocator, capture maximum 32, model
+arguments, and warmed autotune cache. Unless noted, utilization is unset. The
+request window remains 262,144 tokens in every run.
+
+| Configuration | KV tokens | Full-window concurrency | 32k x 8 pressure run |
+| --- | ---: | ---: | --- |
+| Rebased, expandable allocator, capture 32 | 424,196 | 1.62x | 0 preemptions; 63.15 aggregate tok/s |
+| Same flags, `--gpu-memory-utilization 0.92` | 388,449 | 1.48x | 2 preemptions; 59.90 aggregate tok/s |
+| Selective UVA offload of `embed_tokens` | 531,437 | 2.03x | 0 preemptions; 62.78 aggregate tok/s |
+| UVA plus `--mamba-ssm-cache-dtype bfloat16` | 581,507 | 2.22x | Not measured separately |
+
+The capped run is materially worse for cache capacity: it sizes to 388,449
+tokens, 8.4% below the uncapped control. The old 0.92 setting is not part of
+the recommended configuration. Unset utilization means extensible KV sizes
+from measured free memory after warmup; it does not disable safety headroom or
+allow one request beyond the configured model window.
+
+The single shared embedding is BF16 `[248320, 5120]`, 2,542,796,800 bytes
+(2.368 GiB). The main model and MTP already share one allocation on the
+upstream control. A no-temporary-draft-table patch therefore reduces load-time
+peak only and does not grow steady-state KV capacity. Selective UVA moves that
+existing shared embedding to host memory and returns 107,241 KV tokens (+25.3%)
+on this host. The embedding remains shared, and sampled row lookups match the
+pinned checkpoint exactly (max absolute error 0.0).
+
+| Serving case (256 generated tokens) | Upstream control | UVA | Change |
+| --- | ---: | ---: | ---: |
+| Short, concurrency 1 | 184.46 tok/s | 184.48 tok/s | +0.01% |
+| Short, concurrency 4 | 495.89 tok/s | 502.76 tok/s | +1.4% |
+| 32k input, concurrency 1 | 60.65 tok/s | 60.60 tok/s | -0.1% |
+| 32k input, concurrency 4 | 77.70 tok/s | 77.61 tok/s | -0.1% |
+
+Each row is one deterministic serving-benchmark run (one warmup, 256 output
+tokens); treat sub-percent differences as measurement noise, not a speedup.
+Eight concurrent requests at 8k and 32k completed without preemption with
+UVA. The 238,053-token exact-recall prompt passed in 104.9s. The configured
+maximum request context is still 262,144 tokens; cache pool capacity supports
+more total concurrent/cached tokens, not a longer positional window. The
+startup-only table-sharing candidate measured 424,196 tokens and control-like
+throughput, as expected.
+
+The tested UVA CLI additions are `--offload-backend uva --cpu-offload-gb 3
+--cpu-offload-params embed_tokens`. Its effective config offloads 2.37 GiB.
+The control source is `8d540b9144549aaf5ee6f26e47417ec055ceb3c1` and the
+isolated UVA implementation is `3af5fd1d09d5793b8d3f78aa5837b2d6a1fb1113`.
+The full tested argument vector is in
+`/home/anthony/projects/vllm-upgrade-validation/uva-effective-launch.json`;
+the UVA benchmark used the separate `followup-autotune` cache and
+`PYTORCH_ALLOC_CONF=expandable_segments:True`, with `MAX_JOBS` unset. Each
+serving-matrix cell is one measured run after one warmup; no confidence interval
+is claimed. The four cells used short/32k randomized inputs and c1/c4 request
+concurrency, each generated 256 tokens.
+UVA therefore looks promising for capacity without the feared decode hit on
+these measurements; long-context recall and these finite synthetic benchmarks
+do not establish quality or performance for every workload.
+
+The BF16 GDN-state follow-up adds 50,070 KV tokens over FP32 UVA (+9.4%),
+but measured serving throughput was 180.16 / 581.31 / 60.27 / 74.22 tok/s
+for short-c1 / short-c4 / 32k-c1 / 32k-c4. Relative to the FP32 UVA run,
+long-c4 throughput was 4.4% lower and 238,054-token recall took 114.7s versus
+104.9s. Both exact-recall checks passed. These are single runs and do not
+establish a precision-quality result; BF16 remains an optional, unqualified
+capacity mode, not the recommended setting.
+
+Explicit checks against the FP32 UVA server passed function tool selection,
+JSON schema output while a tool was available, and red-image recognition.
+These complement the long recall and concurrent serving checks; they are
+smoke checks, not exhaustive multimodal or tool-use evaluations.
+
+The systemd service now runs the FP32 UVA configuration. On 2026-11-17 it
+started successfully with 531,437 KV tokens / 2.03x, logged 2.37 GiB offloaded,
+and passed health, function-tool, JSON-with-tools, and image smoke checks.
+The previous service file is preserved as
+`/etc/systemd/system/vllm.service.pre-uva-20261117`; remove the three UVA CLI
+arguments to return to the non-UVA configuration. The service continues to use
+the same pinned model/revision and 262,144-token request window.
+
+The `MAX_JOBS=2` workaround was removed from the service and drop-in. The local
+guard selected one job with no override and completed a cold NVFP4 build in
+487s under a 32 GiB test `MemoryMax`, peaking at 7.54 GiB with zero swap. This
+tests the automatic path; it does not imply that each compiler process uses
+less memory. Original service and drop-in copies are preserved as
+`vllm.service.pre-auto-jobs-20261117` and
+`10-memory.conf.pre-auto-jobs-20261117`. Restoring the pre-upgrade unit alone
+is insufficient to restore the old explicit job cap: restore the corresponding
+drop-in backup as well.
