@@ -46,7 +46,13 @@ logger = init_logger(__name__)
 class Qwen3_5MultiTokenPredictor(nn.Module):
     hf_to_vllm_mapper = Qwen3_5Model.hf_to_vllm_mapper
 
-    def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+    def __init__(
+        self,
+        *,
+        vllm_config: VllmConfig,
+        prefix: str = "",
+        share_target_vocab_weights: bool = False,
+    ):
         super().__init__()
 
         model_config = vllm_config.model_config
@@ -61,10 +67,12 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
         self.mtp_start_layer_idx = config.num_hidden_layers
         self.num_mtp_layers = getattr(config, "mtp_num_hidden_layers", 1)
 
-        self.embed_tokens = VocabParallelEmbedding(
-            self.vocab_size,
-            config.hidden_size,
-        )
+        self.embed_tokens: VocabParallelEmbedding | None = None
+        if not share_target_vocab_weights:
+            self.embed_tokens = VocabParallelEmbedding(
+                self.vocab_size,
+                config.hidden_size,
+            )
 
         # Workaround: mtp.fc is stored as BF16 in NVFP4 checkpoints but is
         # missing from hf_quant_config.json exclude_modules. Force unquantized.
@@ -116,6 +124,7 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
         )
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+        assert self.embed_tokens is not None, "Target embedding must be attached first"
         return self.embed_tokens(input_ids)
 
     def forward(
@@ -187,18 +196,34 @@ class Qwen3_5MTP(LocalArgmaxMixin, nn.Module, SupportsMultiModal, SupportsPP):
 
         super().__init__()
         self.config = config
+        spec = vllm_config.speculative_config
+        target = spec.target_model_config if spec is not None else None
+        draft = spec.draft_model_config if spec is not None else None
+        self._share_target_vocab_weights = (
+            vllm_config.parallel_config.pipeline_parallel_size == 1
+            and not getattr(config, "mtp_use_dedicated_embeddings", False)
+            and target is not None
+            and draft is not None
+            and (target.model_weights or target.model, target.revision)
+            == (draft.model_weights or draft.model, draft.revision)
+        )
         self.model = Qwen3_5MultiTokenPredictor(
-            vllm_config=vllm_config, prefix=maybe_prefix(prefix, "mtp")
+            vllm_config=vllm_config,
+            prefix=maybe_prefix(prefix, "mtp"),
+            share_target_vocab_weights=self._share_target_vocab_weights,
         )
 
-        self.lm_head = ParallelLMHead(
-            config.vocab_size,
-            config.hidden_size,
-            quant_config=self.quant_config,
-            prefix=maybe_prefix(prefix, "lm_head"),
-        )
-        if config.tie_word_embeddings:
-            self.lm_head = self.lm_head.tie_weights(self.model.embed_tokens)
+        self.lm_head: ParallelLMHead = None  # type: ignore[assignment]
+        if not self._share_target_vocab_weights:
+            self.lm_head = ParallelLMHead(
+                config.vocab_size,
+                config.hidden_size,
+                quant_config=self.quant_config,
+                prefix=maybe_prefix(prefix, "lm_head"),
+            )
+            if config.tie_word_embeddings:
+                assert self.model.embed_tokens is not None
+                self.lm_head = self.lm_head.tie_weights(self.model.embed_tokens)
 
         self.logits_processor = LogitsProcessor(config.vocab_size)
 
@@ -256,6 +281,7 @@ class Qwen3_5MTP(LocalArgmaxMixin, nn.Module, SupportsMultiModal, SupportsPP):
         hidden_states: torch.Tensor,
         spec_step_idx: int = 0,
     ) -> torch.Tensor | None:
+        assert self.lm_head is not None, "Target LM head must be attached first"
         return self.logits_processor(self.lm_head, hidden_states)
 
     def get_top_tokens(
@@ -267,6 +293,10 @@ class Qwen3_5MTP(LocalArgmaxMixin, nn.Module, SupportsMultiModal, SupportsPP):
         return super().get_top_tokens(hidden_states)
 
     def is_unused_checkpoint_weight(self, name: str) -> bool:
+        if self._share_target_vocab_weights and any(
+            key in name for key in ("embed_tokens", "lm_head")
+        ):
+            return True
         return not name.startswith("mtp.") and not any(
             key in name for key in ["embed_tokens", "lm_head"]
         )

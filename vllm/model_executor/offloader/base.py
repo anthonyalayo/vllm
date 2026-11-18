@@ -60,6 +60,9 @@ class BaseOffloader(ABC):
     circular layer stack) must keep this `False`.
     """
 
+    supports_embedding_offload: bool = False
+    """Whether directly constructed embeddings can use `wrap_modules`."""
+
     @abstractmethod
     def wrap_modules(
         self,

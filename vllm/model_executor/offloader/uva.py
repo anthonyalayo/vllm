@@ -52,6 +52,10 @@ class UVAOffloader(BaseOffloader):
         self.uva_offloading = (
             is_uva_available() and not envs.VLLM_WEIGHT_OFFLOADING_DISABLE_UVA
         )
+        # Embedding users may bypass forward(), so functional_call is unsafe.
+        self.supports_embedding_offload = self.uva_offloading and bool(
+            self.cpu_offload_params
+        )
 
     def wrap_modules(
         self,

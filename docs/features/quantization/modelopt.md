@@ -189,3 +189,35 @@ export VLLM_TEST_MODELOPT_FP8_PC_PT_MODEL_PATH=<path_to_fp8_pc_pt_checkpoint>
 export VLLM_TEST_MODELOPT_FP8_PB_WO_MODEL_PATH=<path_to_fp8_pb_wo_checkpoint>
 pytest -q tests/quantization/test_modelopt.py
 ```
+
+## Local Qwen3.5 MTP memory experiment
+
+The local NVIDIA Qwen3.5 MTP candidate avoids allocating draft vocabulary
+copies when pipeline parallelism is one, the target and draft checkpoint
+identities and revisions match, and `mtp_use_dedicated_embeddings` is false.
+The existing post-load sharing helpers attach the target embedding and LM head.
+Other revisions, dedicated embeddings, and multi-stage pipelines retain their
+vocabulary construction path.
+
+The control already shares the target and draft embedding. Avoiding temporary
+draft vocabulary copies reduces startup peak memory, not steady-state weight
+memory. Embedding UVA can move the shared embedding out of device memory;
+avoiding the temporary draft copy also avoids offloading that copy separately.
+
+Compare this sharing change with embedding offloading separately:
+
+- Sharing only: `--offload-backend auto --cpu-offload-gb 0`.
+- Sharing plus embedding UVA: `--offload-backend uva --cpu-offload-gb 3
+  --cpu-offload-params embed_tokens`.
+
+Direct embedding offload requires UVA and an explicit parameter selector;
+the `embed_tokens` selector does not select `lm_head`. The pinned
+`0cc27958cefbbe231782ec8511de8c4eb5233348` checkpoint's BF16 input embedding
+is 2,542,796,800 bytes (2.368 GiB). Whole-parameter offload can exceed the
+remaining byte budget. These changes have CPU-only validation; GPU memory,
+numerical behavior, and performance require separate qualification.
+
+The implementation adapts embedding routing from patch 0135 and PP1 vocabulary
+allocation from patch 0160 in
+[the Qwen3.8 RTX5090 recipe](https://github.com/adrienbrault/qwen3.8-27b-rtx5090/tree/524d8a5ca280a860607f45740514689e1567eef4/patches-v0310),
+with AI assistance.

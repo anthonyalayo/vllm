@@ -17,6 +17,49 @@ VOCAB_SIZE = 16
 HIDDEN_SIZE = 4
 
 
+@pytest.mark.cpu_test
+@pytest.mark.parametrize(
+    "selector", ["embed_tokens", "language_model.model.embed_tokens"]
+)
+def test_embedding_offload_selector_excludes_lm_head(selector):
+    """Embedding selectors must not select the separately projected LM head."""
+    from vllm.model_executor.offloader import UVAOffloader
+
+    offloader = UVAOffloader(3 * 1024**3, {selector})
+    assert offloader.targets("language_model.model.embed_tokens.weight")
+    assert not offloader.targets("language_model.lm_head.weight")
+    assert not offloader.targets("language_model.model.layers.0.mlp.weight")
+    assert not offloader.targets("language_model.model.embed_tokens_extra.weight")
+
+
+@pytest.mark.cpu_test
+@pytest.mark.usefixtures("dist_init")
+def test_embedding_offload_does_not_use_functional_call(monkeypatch):
+    """Tied vocabularies remain untouched when zero-copy UVA is disabled."""
+    from vllm.model_executor.model_loader.utils import maybe_offload_embeddings
+    from vllm.model_executor.offloader import (
+        UVAOffloader,
+        get_offloader,
+        set_offloader,
+    )
+
+    monkeypatch.setenv("VLLM_WEIGHT_OFFLOADING_DISABLE_UVA", "1")
+    offloader = UVAOffloader(3 * 1024**3, {"embed_tokens"})
+    model = UntiedModel()
+    model.lm_head.tie_weights(model.embed_tokens)
+    original_weight = model.embed_tokens.weight
+    previous = get_offloader()
+    try:
+        set_offloader(offloader)
+        maybe_offload_embeddings(model)
+    finally:
+        set_offloader(previous)
+    assert not offloader.supports_embedding_offload
+    assert offloader.cpu_offload_bytes == 0
+    assert model.embed_tokens.weight is original_weight
+    assert model.lm_head.weight is original_weight
+
+
 class UntiedModel(nn.Module):
     """Nests the head like a multimodal model, which is the harder case."""
 
