@@ -289,6 +289,59 @@ See `systemd-uva-parallelism.json`, `max-seqs-12-launch.json`, and
 `max-seqs-16-launch.json` under the validation directory. Production was
 restored to FP32 UVA with max-num-seqs 8 after the experiment.
 
+## Where per-request slowdown starts
+
+The previous 180 tok/s versus 62 tok/s comparison mixed two different
+measurements. About 180 tok/s was per-request decode on cached-prefix follow-up
+turns. About 63 tok/s was aggregate server output across eight fresh 32k
+prompts, including their prefills. A fresh 32k single request decodes at about
+173 tok/s; at concurrency 8, each request gets about 45 tok/s while aggregate
+output rises to about 63 tok/s.
+
+This matched sweep used the same max-num-seqs 16 server, fresh unique prompts,
+and 256 output tokens at each point. Rates are one run per point; treat the
+precise values as indicative, while the trend is clear.
+
+| Simultaneous requests | Prompt | Mean decode per request | Aggregate output | Mean TTFT |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 8k | 241 tok/s | 129 tok/s | 0.76s |
+| 2 | 8k | 182 tok/s | 187 tok/s | 1.24s |
+| 4 | 8k | 131 tok/s | 237 tok/s | 2.00s |
+| 8 | 8k | 87 tok/s | 279 tok/s | 3.48s |
+| 12 | 8k | 69 tok/s | 297 tok/s | 4.94s |
+| 16 | 8k | 65 tok/s | 295 tok/s | 6.54s |
+| 1 | 32k | 173 tok/s | 47 tok/s | 3.93s |
+| 2 | 32k | 125 tok/s | 56 tok/s | 6.24s |
+| 4 | 32k | 66 tok/s | 60 tok/s | 10.31s |
+| 8 | 32k | 45 tok/s | 63 tok/s | 18.21s |
+| 12 | 32k | 34 tok/s | 63 tok/s | 26.20s |
+| 16 | 32k | 28 tok/s | 63 tok/s | 34.17s |
+
+The trade-off begins at concurrency 2: aggregate output improves while each
+request decodes more slowly. For 32k prompts, aggregate throughput is nearly
+flat after 4-8 requests, while per-request decode and TTFT continue worsening.
+At 8k, aggregate throughput keeps scaling through about 12 requests, then
+flattens. This is the saturation point relevant to choosing max-num-seqs:
+raising it beyond 8 can serve bursts and keep queues inside vLLM, but did not
+materially raise 32k aggregate throughput in these tests.
+
+GPU telemetry during the matched concurrency-4 runs showed SM utilization at
+99-100% during busy samples. NVIDIA's memory-activity utilization was usually
+20-41%, with occasional higher samples; the RTX 5090's direct GPM DRAM activity
+counter was unavailable (`-`) in this capture. PCIe transfer was low apart
+from brief spikes. This points more toward saturated GPU compute plus the
+higher cost of long-context attention/prefill than a demonstrated PCIe or
+DRAM-bandwidth ceiling. It does not prove DRAM bandwidth is irrelevant:
+`nvidia-smi` memory-activity percentage is not a measure of percent of peak
+DRAM bandwidth, and these tests did not include per-kernel Nsight profiling.
+
+The data shows ordinary sharing and saturation: vLLM increases total output by
+batching requests, while each stream receives fewer decode steps per second.
+Longer contexts make each step more expensive. It does not isolate a vLLM
+scheduler regression. The warm-prefix result remains a separate scenario:
+reusing cached 32k prefixes holds TTFT near 0.23s and decode near 180 tok/s per
+request at low concurrency because the long prefill is reused.
+
 The systemd service now runs the FP32 UVA configuration. On 2026-11-17 it
 started successfully with 531,437 KV tokens / 2.03x, logged 2.37 GiB offloaded,
 and passed health, function-tool, JSON-with-tools, and image smoke checks.
