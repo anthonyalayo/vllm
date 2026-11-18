@@ -238,6 +238,15 @@ UVA therefore looks promising for capacity without the feared decode hit on
 these measurements; long-context recall and these finite synthetic benchmarks
 do not establish quality or performance for every workload.
 
+A repeated-prefix agent-like follow-up check used six 32k code/prose prompts
+with a shared cached prefix and three follow-up turns per genre. Median TTFT
+was 230.4 ms on the uncapped non-UVA control and 226.0 ms on UVA (-1.9%);
+median decode was 180.17 and 180.03 tok/s respectively (-0.1%). The cached
+follow-up workload therefore showed no measurable embedding-offload penalty.
+This is a small, warm-prefix test, not a claim about fresh long prefills or all
+agent traffic. Raw rows are in `control-natural.json` and `uva-agent-natural.json`
+under the validation directory.
+
 The BF16 GDN-state follow-up adds 50,070 KV tokens over FP32 UVA (+9.4%),
 but measured serving throughput was 180.16 / 581.31 / 60.27 / 74.22 tok/s
 for short-c1 / short-c4 / 32k-c1 / 32k-c4. Relative to the FP32 UVA run,
