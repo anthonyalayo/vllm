@@ -251,6 +251,35 @@ JSON schema output while a tool was available, and red-image recognition.
 These complement the long recall and concurrent serving checks; they are
 smoke checks, not exhaustive multimodal or tool-use evaluations.
 
+## `--max-num-seqs` parallelism sweep
+
+To distinguish the CLI limit from client-side queuing, the service was
+restarted with `--max-num-seqs` set to 8, 12, and 16. Each configuration used
+FP32 UVA, the same 531k-token cache (the 16-sequence run lost 2,383 tokens),
+and a burst of unique 32k code prompts with 256 generated tokens per request.
+
+| `--max-num-seqs` / simultaneous requests | Aggregate output | Batch elapsed | Mean TTFT | Peak running / waiting | Peak cache | Preemptions |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 / 8 | 62.78 tok/s | 32.62s | Not captured in this run | 8 / 6 | 81.1% | 0 |
+| 12 / 12 | 63.57 tok/s | 48.33s | 26.07s | 9 / 9 | 86.0% | 0 |
+| 16 / 16 | 63.87 tok/s | 64.13s | 33.91s | 9 / 13 | 91.0% | 0 |
+
+Throughput gains over 8 were only 1.3% at 12 and 1.7% at 16, while batch
+completion time rose 48% and 97%. The 12/16 configurations never got all
+requests running at once; higher configured limits mostly increased queuing
+and latency. CUDA decode graphs remained captured only through 8 requests
+even when `--max-num-seqs` was 12 or 16, which likely limits the benefit of
+those larger settings. On this 5090, the best measured setting is to keep
+`--max-num-seqs 8`; consider increasing it only alongside deliberate decode
+graph capture tuning and a workload-specific concurrency test.
+
+The sweep is a single run per setting with no confidence interval. The 8-case
+measurement comes from the earlier UVA capacity stress script; 12 and 16 were
+measured by `parallelism_sweep.py` with identical prompt/output dimensions.
+See `systemd-uva-parallelism.json`, `max-seqs-12-launch.json`, and
+`max-seqs-16-launch.json` under the validation directory. Production was
+restored to FP32 UVA with max-num-seqs 8 after the experiment.
+
 The systemd service now runs the FP32 UVA configuration. On 2026-11-17 it
 started successfully with 531,437 KV tokens / 2.03x, logged 2.37 GiB offloaded,
 and passed health, function-tool, JSON-with-tools, and image smoke checks.
